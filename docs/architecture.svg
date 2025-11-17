@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560">
+    <defs>
+        <style>
+            .title {
+                font: 700 20px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                fill: #111
+            }
+
+            .h {
+                font: 600 16px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                fill: #111
+            }
+
+            .b {
+                font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                fill: #222
+            }
+
+            .cap {
+                font: 400 12px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+                fill: #555
+            }
+
+            .box {
+                fill: #fff;
+                stroke: #D0D7DE;
+                stroke-width: 1.2;
+                rx: 12;
+            }
+
+            .core {
+                fill: #F0F7FF;
+                stroke: #9EC5FE;
+            }
+
+            .tool {
+                fill: #FFF7E6;
+                stroke: #F7C566;
+            }
+
+            .bind {
+                fill: #F6FFED;
+                stroke: #B7EB8F;
+            }
+
+            .shadow {
+                filter: url(#shadow)
+            }
+        </style>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.08" />
+        </filter>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="10" refY="3" orient="auto"
+            markerUnits="strokeWidth">
+            <path d="M0,0 L10,3 L0,6 Z" fill="#555" />
+        </marker>
+    </defs>
+
+
+    <!-- Title -->
+    <text x="480" y="30" text-anchor="middle" class="title">InferX Architecture</text>
+
+
+    <!-- High-level API -->
+    <g class="shadow">
+        <rect x="120" y="60" width="720" height="78" class="box" />
+        <text x="480" y="90" text-anchor="middle" class="h">High-level API</text>
+        <text x="480" y="112" text-anchor="middle" class="b">Session · TokenStream · FineTuneCLI · Converter ·
+            Evaluator</text>
+    </g>
+
+
+    <!-- Platform Bindings -->
+    <g class="shadow">
+        <rect x="60" y="180" width="460" height="90" class="box bind" />
+        <text x="290" y="208" text-anchor="middle" class="h">Platform Bindings</text>
+        <text x="290" y="232" text-anchor="middle" class="b">Android · iOS · Flutter · Desktop (CMake/CLI)</text>
+    </g>
+
+
+    <!-- Toolchain -->
+    <g class="shadow">
+        <rect x="560" y="180" width="340" height="90" class="box tool" />
+        <text x="730" y="208" text-anchor="middle" class="h">Fine-tuning Toolchain</text>
+        <text x="730" y="232" text-anchor="middle" class="b">LoRA/QLoRA · Export (GGUF/MNN) · Eval</text>
+    </g>
+
+
+    <!-- Backend Core -->
+    <g class="shadow">
+        <rect x="120" y="320" width="720" height="110" class="box core" />
+        <text x="480" y="352" text-anchor="middle" class="h">Backend Core</text>
+        <text x="480" y="378" text-anchor="middle" class="b">llama.cpp · MNN-LLM · (CoreML / NNAPI / Vulkan,
+            extensible)</text>
+        <text x="480" y="402" text-anchor="middle" class="cap">KV cache · Quantization (Q4_K_M/Q5_K_M/Q8_0) ·
+            Speculative (exp.)</text>
+    </g>
+
+
+    <!-- Arrows -->
+    <path d="M480,138 L480,176" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)" />
+    <path d="M350,138 L350,176" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)" />
+    <path d="M610,138 L610,176" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)" />
+
+
+    <path d="M290,270 L290,316" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)" />
+    <path d="M730,270 L730,316" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)" />
+
+
+    <!-- Footer caption -->
+    <text x="480" y="530" text-anchor="middle" class="cap">© 2025 InferX • Replace this SVG path as
+        docs/architecture.svg and embed in README</text>
+</svg>

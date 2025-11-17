@@ -1,0 +1,67 @@
+build
+test
+
+*.gguf
+*.DS_Store
+
+android/llx-android/.cxx/
+android/llx-android/.gradle/
+android/llx-android/.idea/
+android/llx-android/.kotlin/
+android/llx-android/build/
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/llx-example/.gradle/
+android/llx-example/.idea/
+
+# Ignore machine-specific Android SDK/local settings
+local.properties
+
+# macOS
+.DS_Store
+
+# Xcode user data (do not commit)
+*.xcuserstate
+*.xcuserdatad/
+*.xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Build products (kept out of VCS)
+**/DerivedData/
+**/build/
+
+# Swift Package Manager (local package under ios/llx-ios)
+ios/llx-ios/.build/
+ios/llx-ios/.swiftpm/
+ios/llx-ios/Package.resolved
+
+# Logs
+*.log
+
+# iOS build artifacts
+*.dSYM/
+*.xcarchive
+*.ipa
+*.app/
+
+# iOS vendor binaries (keep out of VCS)
+*.xcframework/
+*.framework/
+
+# Explicitly ignore bundled llama.xcframework
+ios/llx-ios/Sources/InferxLLMNative/llama.xcframework/
+
+# Credentials & signing (never commit secrets)
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+*.der
+*.key
+*.keystore

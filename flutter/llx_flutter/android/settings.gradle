@@ -1,0 +1,5 @@
+rootProject.name = 'llx_flutter'
+
+// 包含 llx-android 模块（注意从此目录到仓库根需返回三级）
+include ':llx-android'
+project(':llx-android').projectDir = new File('../../../android/llx-android')

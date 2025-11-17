@@ -1,0 +1,7 @@
+[submodule "third_party/llama.cpp"]
+	path = third_party/llama.cpp
+	url = git@github.com:agus-official/llama.cpp.git
+	branch = master
+[submodule "third_party/minja"]
+	path = third_party/minja
+	url = https://github.com/google/minja.git
