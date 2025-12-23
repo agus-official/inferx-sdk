@@ -69,7 +69,8 @@ Java_com_inferx_llx_LLX_nativeSessionInitFromMessagesJson(JNIEnv* env, jclass, j
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_inferx_llx_LLX_nativeChatCompleteJson(JNIEnv* env, jclass, jlong sess, jstring jreq) {
     const char* creq = env->GetStringUTFChars(jreq, nullptr);
-    std::string out(1 << 20, '\0');
+    // Chat completion responses (especially with tool calling) can be fairly large.
+    std::string out(4 << 20, '\0');
     int ok = llx_chat_complete_json(jlong_to_ptr<llx_session>(sess), creq, out.data(), out.size());
     env->ReleaseStringUTFChars(jreq, creq);
     if (!ok) {

@@ -194,15 +194,30 @@ static std::vector<common_chat_tool_call> parse_functiongemma_tool_calls(const s
         if (s == std::string::npos) break;
         size_t a = s + start.size();
         size_t e = text.find(end, a);
-        if (e == std::string::npos) break;
+        bool partial = false;
+        if (e == std::string::npos) {
+            // tolerate partial generation (e.g. missing <end_function_call>)
+            e = text.size();
+            partial = true;
+        }
         std::string inner = trim_copy(text.substr(a, e - a));
 
-        // expected: call:NAME{...}
-        size_t callp = inner.find("call:");
-        if (callp == std::string::npos) { pos = e + end.size(); continue; }
-        size_t name_b = callp + 5;
+        // expected: call:NAME{...} (but be tolerant: "callNAME{...}" or "call NAME{...}")
+        // We only accept a call that starts with "call" after trimming.
+        if (inner.rfind("call", 0) != 0) {
+            pos = partial ? e : (e + end.size());
+            if (partial) break;
+            continue;
+        }
+        size_t name_b = 4;
+        if (name_b < inner.size() && inner[name_b] == ':') name_b++;
+        while (name_b < inner.size() && std::isspace((unsigned char)inner[name_b])) name_b++;
         size_t brace = inner.find('{', name_b);
-        if (brace == std::string::npos) { pos = e + end.size(); continue; }
+        if (brace == std::string::npos) {
+            pos = partial ? e : (e + end.size());
+            if (partial) break;
+            continue;
+        }
         std::string name = trim_copy(inner.substr(name_b, brace - name_b));
 
         // args object
@@ -215,7 +230,8 @@ static std::vector<common_chat_tool_call> parse_functiongemma_tool_calls(const s
         tc.id = "call_" + std::to_string(idx++);
         out.push_back(tc);
 
-        pos = e + end.size();
+        pos = partial ? e : (e + end.size());
+        if (partial) break;
     }
     return out;
 }

@@ -373,6 +373,86 @@ class ModelSheet extends StatelessWidget {
                 );
               },
             ),
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            const Text(
+              'Tool Calling',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            ValueListenableBuilder<bool>(
+              valueListenable: c.enableTools,
+              builder: (BuildContext context, bool enabled, Widget? _) {
+                return SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Enable tools'),
+                  subtitle: const Text(
+                    'Use chatCompleteJson + tool loop (recommended for FunctionGemma)',
+                  ),
+                  value: enabled,
+                  onChanged: (v) => c.enableTools.value = v,
+                );
+              },
+            ),
+            ValueListenableBuilder<String>(
+              valueListenable: c.toolFormat,
+              builder: (BuildContext context, String fmt, Widget? _) {
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('tool_format'),
+                  subtitle: const Text('auto / openai / functiongemma'),
+                  trailing: DropdownButton<String>(
+                    value: fmt,
+                    items: const [
+                      DropdownMenuItem(value: 'auto', child: Text('auto')),
+                      DropdownMenuItem(value: 'openai', child: Text('openai')),
+                      DropdownMenuItem(
+                        value: 'functiongemma',
+                        child: Text('functiongemma'),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      c.toolFormat.value = v;
+                      if (v == 'functiongemma' && c.maxToolCalls.value <= 0) {
+                        c.maxToolCalls.value = 1;
+                      }
+                    },
+                  ),
+                );
+              },
+            ),
+            ValueListenableBuilder<int>(
+              valueListenable: c.maxToolCalls,
+              builder: (BuildContext context, int n, Widget? _) {
+                final bool isGemma = c.toolFormat.value == 'functiongemma';
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('max_tool_calls'),
+                  subtitle: Text(
+                    isGemma
+                        ? 'Recommended: 1 (single tool call)'
+                        : '0 = unlimited',
+                  ),
+                  trailing: SizedBox(
+                    width: 96,
+                    child: TextFormField(
+                      initialValue: n.toString(),
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (v) {
+                        final parsed = int.tryParse(v);
+                        if (parsed != null) c.maxToolCalls.value = parsed;
+                      },
+                    ),
+                  ),
+                );
+              },
+            ),
             const SizedBox(height: 8),
             ValueListenableBuilder<bool>(
               valueListenable: c.isModelLoaded,

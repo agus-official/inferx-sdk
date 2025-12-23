@@ -100,7 +100,9 @@ public final class InferxSession {
     }
 
     public func chatComplete(requestJSON: String) throws -> String {
-        var out = [CChar](repeating: 0, count: 64 * 1024)
+        // Chat completion responses (especially with tool calling) can be fairly large.
+        // Keep this in sync with Android JNI and C++ examples.
+        var out = [CChar](repeating: 0, count: 4 * 1024 * 1024)
         let ok = requestJSON.withCString { c in
             out.withUnsafeMutableBufferPointer { bp in
                 llx_chat_complete_json(self.handle, c, bp.baseAddress, bp.count)

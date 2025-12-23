@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:llx_flutter/llx_flutter.dart';
 
@@ -27,8 +28,12 @@ abstract class ChatBackend {
   /// 当前模型路径（本地）
   String? get currentModelPath;
 
-  /// 基于历史消息开始一次流式生成，返回按节流频率聚合后的完整内容流
-  Stream<ChatStreamEvent> generateFromMessages(List<ChatMessage> history);
+  /// 基于 OpenAI messages 结构开始一次生成（可包含 tool_calls/tool 响应等字段）
+  /// - messages: List<Map>，元素形如 {"role":"user","content":"..."} 或 tool message 等
+  Stream<ChatStreamEvent> generateFromOaiMessages(
+    List<Map<String, dynamic>> messages, {
+    required ChatRequestOptions options,
+  });
 
   /// LoRA 操作（远程后端可为 no-op）
   Future<bool> addLora(String path, {double scale = 1.0});
@@ -42,10 +47,37 @@ abstract class ChatBackend {
   Future<String> lastError();
 }
 
+/// Chat/completions 请求选项（示例侧使用）
+class ChatRequestOptions {
+  final String modelName; // request_json 里的 "model"
+  final bool enableTools;
+  final String toolFormat; // auto|openai|functiongemma
+  final int maxToolCalls; // 0=unlimited
+  final int maxTokens;
+  final double temperature;
+  final double topP;
+  final int topK;
+  final bool parseToolCalls;
+
+  const ChatRequestOptions({
+    this.modelName = 'local-llm',
+    this.enableTools = false,
+    this.toolFormat = 'auto',
+    this.maxToolCalls = 0,
+    this.maxTokens = 512,
+    this.temperature = 0.7,
+    this.topP = 0.9,
+    this.topK = 40,
+    this.parseToolCalls = true,
+  });
+}
+
 /// 本地后端：封装 LlxFlutter，并以固定频率聚合发出内容，降低刷新
 class LocalChatBackend implements ChatBackend {
   final LlxFlutter _llx;
   final Duration emitInterval;
+  void Function(String msg)? onLog;
+  void Function(ChatMessage msg)? onUiMessage;
 
   int _modelHandle = 0;
   int _sessionHandle = 0;
@@ -54,6 +86,8 @@ class LocalChatBackend implements ChatBackend {
   LocalChatBackend({
     LlxFlutter? llx,
     this.emitInterval = const Duration(milliseconds: 10),
+    this.onLog,
+    this.onUiMessage,
   }) : _llx = llx ?? LlxFlutter();
 
   @override
@@ -98,23 +132,39 @@ class LocalChatBackend implements ChatBackend {
   String? get currentModelPath => _modelPath;
 
   @override
-  Stream<ChatStreamEvent> generateFromMessages(
-    List<ChatMessage> history,
-  ) async* {
+  Stream<ChatStreamEvent> generateFromOaiMessages(
+    List<Map<String, dynamic>> messages, {
+    required ChatRequestOptions options,
+  }) async* {
     if (!isReady) throw StateError('Backend not ready');
 
-    // 构建 OpenAI 兼容 JSON
-    final messagesJson = history
+    // 如果启用工具，使用 OpenAI chatCompleteJson（支持 tools/tool_calls/stop/tool_format 等）
+    if (options.enableTools) {
+      yield* _generateViaChatCompletion(messages, options);
+      return;
+    }
+
+    // 否则保留旧的 sessionStep 流式路径（不带 tools）
+    yield* _generateViaSessionStep(messages);
+  }
+
+  Stream<ChatStreamEvent> _generateViaSessionStep(
+    List<Map<String, dynamic>> messages,
+  ) async* {
+    // 仅支持 {role, content} 的最简 messages
+    final minimal = messages
+        .where((m) => m['role'] is String)
         .map(
-          (m) =>
-              '{"role":"${_escape(m.role)}","content":"${_escape(m.content)}"}',
+          (m) => ChatMessage(
+            role: m['role'] as String,
+            content: (m['content'] ?? '').toString(),
+          ),
         )
-        .join(',');
-    final fullJson = '[$messagesJson]';
+        .toList(growable: false);
 
-    await _llx.sessionInitFromMessagesJson(_sessionHandle, fullJson);
+    final messagesJson = jsonEncode(minimal.map((m) => m.toJson()).toList());
+    await _llx.sessionInitFromMessagesJson(_sessionHandle, messagesJson);
 
-    // 聚合输出：按 emitInterval 频率发出完整内容，避免 UI 过于频繁重建
     final controller = StreamController<ChatStreamEvent>();
     final buffer = StringBuffer();
     Timer? ticker;
@@ -127,27 +177,21 @@ class LocalChatBackend implements ChatBackend {
     }
 
     ticker = Timer.periodic(emitInterval, (_) {
-      if (!controller.isClosed && buffer.isNotEmpty && !finished) {
-        emitNow();
-      }
+      if (!controller.isClosed && buffer.isNotEmpty && !finished) emitNow();
     });
 
     () async {
       try {
         while (true) {
           final step = await _llx.sessionStep(_sessionHandle);
-          if (step.text.isNotEmpty) {
-            buffer.write(step.text);
-          }
+          if (step.text.isNotEmpty) buffer.write(step.text);
           if (step.finished) break;
         }
         finished = true;
         ticker?.cancel();
-        // 发送最终完整内容与结束标志
         controller.add(
           ChatStreamEvent(content: buffer.toString(), finished: true),
         );
-        // 清空 KV，准备下次对话
         await _llx.sessionKvClear(_sessionHandle);
       } catch (e) {
         ticker?.cancel();
@@ -158,6 +202,176 @@ class LocalChatBackend implements ChatBackend {
     }();
 
     yield* controller.stream;
+  }
+
+  Stream<ChatStreamEvent> _generateViaChatCompletion(
+    List<Map<String, dynamic>> messages,
+    ChatRequestOptions options,
+  ) async* {
+    final controller = StreamController<ChatStreamEvent>();
+
+    () async {
+      try {
+        final tools = _defaultToolsSchema();
+        final toolHandlers = _defaultToolHandlers();
+
+        // 执行 tool loop：直到模型不再返回 tool_calls
+        for (int iter = 0; iter < 8; iter++) {
+          // 为了避免 KV 残留影响（我们的 chatComplete 走“每次完整 prefill”），每轮清空 KV
+          await _llx.sessionKvClear(_sessionHandle);
+
+          final req = <String, dynamic>{
+            'model': options.modelName,
+            'messages': messages,
+            'temperature': options.temperature,
+            'top_p': options.topP,
+            'top_k': options.topK,
+            'max_tokens': options.maxTokens,
+            'parse_tool_calls': options.parseToolCalls,
+            'tool_format': options.toolFormat,
+            'max_tool_calls': options.maxToolCalls,
+          };
+
+          if (tools.isNotEmpty) {
+            req['tools'] = tools;
+            req['tool_choice'] = 'auto';
+            req['parallel_tool_calls'] = false;
+          }
+
+          // Ollama-compatible FunctionGemma stop sequences
+          if (options.toolFormat == 'functiongemma') {
+            if (options.maxToolCalls == 1) {
+              req['stop'] = [
+                '<end_function_call>',
+                '<start_function_response>',
+              ];
+            } else {
+              req['stop'] = ['<start_function_response>'];
+            }
+          }
+
+          final respStr = await _llx.chatCompleteJson(
+            _sessionHandle,
+            jsonEncode(req),
+          );
+
+          final resp = jsonDecode(respStr) as Map<String, dynamic>;
+          final choices = resp['choices'] as List<dynamic>? ?? const [];
+          final msg =
+              (choices.isNotEmpty ? (choices[0] as Map)['message'] : null)
+                  as Map<String, dynamic>?;
+          if (msg == null) {
+            messages.add({'role': 'assistant', 'content': ''});
+            controller.add(const ChatStreamEvent(content: '', finished: true));
+            break;
+          }
+
+          final toolCalls = msg['tool_calls'];
+          if (toolCalls is List && toolCalls.isNotEmpty) {
+            // 追加 assistant tool_calls 消息
+            messages.add(msg);
+
+            for (final tc in toolCalls) {
+              if (tc is! Map) continue;
+              final id = (tc['id'] ?? 'call_0').toString();
+              final fn = (tc['function'] is Map)
+                  ? (tc['function'] as Map)
+                  : const <String, dynamic>{};
+              final name = (fn['name'] ?? '').toString();
+              final argsRaw = fn['arguments'];
+              String argsStr = '';
+              if (argsRaw is String) {
+                argsStr = argsRaw;
+              } else if (argsRaw != null) {
+                argsStr = jsonEncode(argsRaw);
+              }
+
+              onLog?.call('tool_call: $name($argsStr)');
+              onUiMessage?.call(
+                ChatMessage(role: 'tool_call', content: '$name($argsStr)'),
+              );
+
+              Map<String, dynamic> args = <String, dynamic>{};
+              try {
+                final parsed = jsonDecode(argsStr);
+                if (parsed is Map<String, dynamic>) args = parsed;
+              } catch (_) {
+                // ignore
+              }
+
+              final handler = toolHandlers[name];
+              final toolResult = (handler != null)
+                  ? await handler(args)
+                  : jsonEncode({'error': 'unknown tool'});
+
+              onLog?.call('tool_result[$name]: $toolResult');
+              onUiMessage?.call(
+                ChatMessage(
+                  role: 'tool_result',
+                  content: '$name -> $toolResult',
+                ),
+              );
+
+              // FunctionGemma template requires tool response name
+              messages.add({
+                'role': 'tool',
+                'name': name,
+                'tool_call_id': id,
+                'content': toolResult,
+              });
+            }
+            // 继续下一轮，让模型基于 tool 结果输出最终回答
+            continue;
+          }
+
+          final content = msg['content'];
+          final text = (content == null) ? '' : content.toString();
+          messages.add(msg);
+          controller.add(ChatStreamEvent(content: text, finished: true));
+          break;
+        }
+      } catch (e) {
+        controller.addError(e);
+      } finally {
+        await controller.close();
+      }
+    }();
+
+    yield* controller.stream;
+  }
+
+  List<Map<String, dynamic>> _defaultToolsSchema() {
+    return <Map<String, dynamic>>[
+      {
+        'type': 'function',
+        'function': {
+          'name': 'get_weather',
+          'description': 'Get the current weather for a city',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'city': {'type': 'string'},
+            },
+            'required': ['city'],
+          },
+        },
+      },
+    ];
+  }
+
+  Map<String, Future<String> Function(Map<String, dynamic>)>
+  _defaultToolHandlers() {
+    return <String, Future<String> Function(Map<String, dynamic>)>{
+      'get_weather': (Map<String, dynamic> args) async {
+        final city = (args['city'] ?? '').toString();
+        return jsonEncode({
+          'city': city,
+          'temperature': 22,
+          'unit': 'celsius',
+          'condition': 'sunny',
+        });
+      },
+    };
   }
 
   @override
@@ -195,15 +409,6 @@ class LocalChatBackend implements ChatBackend {
 
   @override
   Future<String> lastError() => _llx.lastError();
-
-  String _escape(String s) {
-    return s
-        .replaceAll('\\', '\\\\')
-        .replaceAll('"', '\\"')
-        .replaceAll('\n', '\\n')
-        .replaceAll('\r', '\\r')
-        .replaceAll('\t', '\\t');
-  }
 }
 
 /// 远程后端占位实现（SSE/WebSocket 可在此实现）
@@ -235,9 +440,10 @@ class RemoteChatBackend implements ChatBackend {
   Future<void> unloadModel() async {}
 
   @override
-  Stream<ChatStreamEvent> generateFromMessages(
-    List<ChatMessage> history,
-  ) async* {
+  Stream<ChatStreamEvent> generateFromOaiMessages(
+    List<Map<String, dynamic>> messages, {
+    required ChatRequestOptions options,
+  }) async* {
     // 这里可实现 SSE/WebSocket，并按 emitInterval 聚合；先返回错误占位
     yield const ChatStreamEvent(
       content: 'Remote backend 未实现流式连接',

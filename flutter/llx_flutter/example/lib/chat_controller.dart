@@ -8,7 +8,14 @@ import 'chat_backend.dart';
 /// 全局聊天控制器：集中管理模型、会话、消息与 LoRA 状态
 class ChatController {
   ChatController({ChatBackend? backend})
-    : _backend = backend ?? LocalChatBackend();
+    : _backend = backend ?? LocalChatBackend() {
+    // Wire backend logs into controller logs (avoid referencing ChatController.instance during static init)
+    final b = _backend;
+    if (b is LocalChatBackend) {
+      b.onLog = log;
+      b.onUiMessage = _handleBackendUiMessage;
+    }
+  }
 
   static final ChatController instance = ChatController();
 
@@ -32,7 +39,17 @@ class ChatController {
   String? currentModelPath;
   Stream<ChatStreamEvent>? generationStream;
 
-  final List<Map<String, String>> _chatHistory = <Map<String, String>>[];
+  // OpenAI-compatible message history (can include tool_calls/tool responses)
+  final List<Map<String, dynamic>> _oaiHistory = <Map<String, dynamic>>[];
+
+  // Chat options
+  final ValueNotifier<bool> enableTools = ValueNotifier<bool>(false);
+  final ValueNotifier<String> toolFormat = ValueNotifier<String>(
+    'auto',
+  ); // auto|openai|functiongemma
+  final ValueNotifier<int> maxToolCalls = ValueNotifier<int>(
+    1,
+  ); // FunctionGemma default
 
   // 后端状态快照
   bool get isReady => _backend.isReady;
@@ -68,6 +85,23 @@ class ChatController {
       isModelLoaded.value = true;
       currentModelPath = modelPath;
       log('模型加载成功: $modelPath');
+
+      // Reset conversation
+      messages.value = <ChatMessage>[];
+      _oaiHistory
+        ..clear()
+        ..add({'role': 'system', 'content': _defaultSystemPrompt()});
+
+      // Heuristic: if filename hints Gemma, prefer functiongemma tool format.
+      final lower = modelPath.toLowerCase();
+      if (lower.contains('functiongemma') ||
+          (lower.contains('gemma') && !lower.contains('qwen'))) {
+        toolFormat.value = 'functiongemma';
+        maxToolCalls.value = 1;
+        enableTools.value = true;
+        log('检测到 Gemma 模型，已启用 tool_format=functiongemma，max_tool_calls=1');
+      }
+
       return true;
     } catch (e) {
       log('加载模型失败: $e');
@@ -83,6 +117,8 @@ class ChatController {
     isModelLoaded.value = false;
     currentModelPath = null;
     loras.value = <LoraItem>[];
+    messages.value = <ChatMessage>[];
+    _oaiHistory.clear();
     log('已卸载模型');
   }
 
@@ -133,11 +169,12 @@ class ChatController {
 
   // 生成
   Future<void> sendUserMessage(String content) async {
-    if (content.trim().isEmpty || !isModelLoaded.value || isGenerating.value)
+    if (content.trim().isEmpty || !isModelLoaded.value || isGenerating.value) {
       return;
+    }
 
-    // 加入历史
-    _chatHistory.add(<String, String>{'role': 'user', 'content': content});
+    // 加入 OpenAI 历史
+    _oaiHistory.add(<String, dynamic>{'role': 'user', 'content': content});
 
     // 更新消息列表：用户 + 占位助手
     final List<ChatMessage> next = List<ChatMessage>.from(messages.value)
@@ -147,17 +184,24 @@ class ChatController {
 
     // 开始生成
     isGenerating.value = true;
-    final List<ChatMessage> history = _chatHistory
-        .map(
-          (e) => ChatMessage(
-            role: e['role'] ?? 'user',
-            content: e['content'] ?? '',
-          ),
-        )
-        .toList(growable: false);
+    final opts = ChatRequestOptions(
+      modelName: toolFormat.value == 'functiongemma'
+          ? 'functiongemma'
+          : 'local-llm',
+      enableTools: enableTools.value,
+      toolFormat: toolFormat.value,
+      maxToolCalls: (toolFormat.value == 'functiongemma')
+          ? maxToolCalls.value
+          : 0,
+      maxTokens: 512,
+      temperature: 0.7,
+      topP: 0.9,
+      topK: 40,
+      parseToolCalls: true,
+    );
 
     final Stream<ChatStreamEvent> stream = _backend
-        .generateFromMessages(history)
+        .generateFromOaiMessages(_oaiHistory, options: opts)
         .asBroadcastStream();
     generationStream = stream;
 
@@ -174,10 +218,15 @@ class ChatController {
             );
             messages.value = cur;
           }
-          _chatHistory.add(<String, String>{
-            'role': 'assistant',
-            'content': event.content,
-          });
+          // 把最终 assistant 内容也写入 OpenAI 历史（若 backend 已追加，这里允许重复检查）
+          if (_oaiHistory.isEmpty ||
+              _oaiHistory.last['role'] != 'assistant' ||
+              (_oaiHistory.last['content'] ?? '') != event.content) {
+            _oaiHistory.add(<String, dynamic>{
+              'role': 'assistant',
+              'content': event.content,
+            });
+          }
           isGenerating.value = false;
           generationStream = null;
         }
@@ -199,4 +248,25 @@ class ChatController {
   }
 
   Future<String> lastError() => _backend.lastError();
+
+  void _handleBackendUiMessage(ChatMessage msg) {
+    // Insert tool trace messages before the placeholder assistant bubble (last assistant).
+    final List<ChatMessage> cur = List<ChatMessage>.from(messages.value);
+    final int idx = cur.lastIndexWhere((m) => m.role == 'assistant');
+    if (idx >= 0) {
+      cur.insert(idx, msg);
+    } else {
+      cur.add(msg);
+    }
+    messages.value = cur;
+  }
+
+  String _defaultSystemPrompt() {
+    // Keep this prompt short and strict to help small tool-calling models behave.
+    return 'You are a CLI assistant. Keep replies short and operational.\n'
+        '- If tools are available and needed, call exactly ONE tool.\n'
+        '- When calling a tool, output ONLY the function call (no extra text).\n'
+        '- Never invent tool results; wait for the tool response message.\n'
+        '- If the user asks about weather, call get_weather(city).';
+  }
 }
