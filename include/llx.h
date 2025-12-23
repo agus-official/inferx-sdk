@@ -73,6 +73,12 @@ extern "C"
 
     // 本地 OpenAI chat/completions 风格：
     // - request_json: OpenAI 兼容的请求 JSON（必须包含 model/messages，可选 tools/tool_choice/temperature/top_p 等）
+    //   - 可选：stop（string 或 string[]），命中任意 stop 序列会截断生成
+    //   - 可选：max_tool_calls（int，>0 时最多返回 N 个 tool_calls；用于把并行工具调用模型压成单次调用）
+    //   - 可选：tool_format: "auto"|"openai"|"functiongemma"
+    //       - auto: 根据 model 名称（包含 gemma/functiongemma）与是否提供 tools 做启发式选择
+    //       - functiongemma: 会把 <start_function_response> 作为 stop，并解析 <start_function_call>...<end_function_call>
+    //         - 当 max_tool_calls=1 时，额外把 <end_function_call> 作为 stop（强制单次 tool call）
     // - out_json: 写入 OpenAI 兼容响应 JSON（包含 choices[0].message 或 tool_calls，finish_reason 等）
     // 返回 1 成功，0 失败（错误见 llx_last_error）
     LLX_API int llx_chat_complete_json(llx_session *sess,
