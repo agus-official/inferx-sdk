@@ -86,8 +86,7 @@ static std::string build_request_json(
     int max_tokens,
     int max_tool_calls,
     bool parse_tool_calls,
-    const std::string &tool_choice,
-    const std::string &tool_format
+    const std::string &tool_choice
 ) {
     std::ostringstream os;
     os << "{\n";
@@ -103,23 +102,11 @@ static std::string build_request_json(
         os << "  \"tool_choice\": \"" << tool_choice << "\",\n";
         os << "  \"parallel_tool_calls\": false,\n";
     }
-    if (!tool_format.empty()) {
-        os << "  \"tool_format\": \"" << tool_format << "\",\n";
-    }
     os << "  \"temperature\": " << temperature << ",\n";
     os << "  \"top_p\": " << top_p << ",\n";
     os << "  \"top_k\": " << top_k << ",\n";
     os << "  \"max_tokens\": " << max_tokens << ",\n";
-    // FunctionGemma stop sequences (Ollama-compatible):
-    // - Always stop when the model starts emitting a tool response (the program should provide real tool output).
-    // - If we only want 1 tool call, also stop right after the first </end_function_call>.
-    if (tool_format == "functiongemma") {
-        if (max_tool_calls == 1) {
-            os << "  \"stop\": [\"<end_function_call>\", \"<start_function_response>\"],\n";
-        } else {
-            os << "  \"stop\": [\"<start_function_response>\"],\n";
-        }
-    }
+    // stop/tool_format 由 SDK 内部的“模型族策略”自动处理（无需在示例里显式传入）
     if (max_tool_calls > 0) {
         os << "  \"max_tool_calls\": " << max_tool_calls << ",\n";
     }
@@ -179,14 +166,19 @@ static std::string tools_schema() {
            "]";
 }
 
+static bool is_gemma_family_name(const std::string &model_name) {
+    std::string s = model_name;
+    for (auto &c : s) c = (char) std::tolower((unsigned char) c);
+    return s.find("functiongemma") != std::string::npos || s.find("gemma") != std::string::npos;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " --model /path/to/model.gguf [--name functiongemma] [--tool_format auto|openai|functiongemma] [--max_tool_calls 1] [--ctx 16384] [--max_tokens 1024] [--temp 0.7] [--top_p 0.9] [--top_k 40]\n";
+        std::cerr << "Usage: " << argv[0] << " --model /path/to/model.gguf [--name model_name] [--max_tool_calls 1] [--ctx 16384] [--max_tokens 1024] [--temp 0.7] [--top_p 0.9] [--top_k 40]\n";
         return 1;
     }
     std::string model_path;
     std::string model_name = "local-llm";
-    std::string tool_format = "auto";
     int ctx_len = 16384;
     int max_tokens = 1024;
     int max_tool_calls = 0; // 0 = unlimited
@@ -198,7 +190,6 @@ int main(int argc, char **argv) {
         std::string a = argv[i];
         if (a == "--model" && i + 1 < argc) model_path = argv[++i];
         else if (a == "--name" && i + 1 < argc) model_name = argv[++i];
-        else if (a == "--tool_format" && i + 1 < argc) tool_format = argv[++i];
         else if (a == "--max_tool_calls" && i + 1 < argc) max_tool_calls = std::atoi(argv[++i]);
         else if (a == "--ctx" && i + 1 < argc) ctx_len = std::atoi(argv[++i]);
         else if (a == "--max_tokens" && i + 1 < argc) max_tokens = std::atoi(argv[++i]);
@@ -207,8 +198,8 @@ int main(int argc, char **argv) {
         else if (a == "--top_k" && i + 1 < argc) top_k = std::atoi(argv[++i]);
     }
     if (model_path.empty()) { std::cerr << "Missing --model\n"; return 1; }
-    // For FunctionGemma, default to single tool call unless explicitly overridden.
-    if (max_tool_calls <= 0 && tool_format == "functiongemma") {
+    // 对 gemma/functiongemma：默认单次 tool call（更稳定；也避免“并行多 call”）
+    if (max_tool_calls <= 0 && is_gemma_family_name(model_name)) {
         max_tool_calls = 1;
     }
 
@@ -265,7 +256,7 @@ int main(int argc, char **argv) {
                 messages, tools, model_name,
                 /*temperature=*/temperature, /*top_p=*/top_p, /*top_k=*/top_k,
                 /*max_tokens=*/max_tokens, /*max_tool_calls=*/max_tool_calls,
-                /*parse_tool_calls=*/true, /*tool_choice=*/"auto", /*tool_format=*/tool_format);
+                /*parse_tool_calls=*/true, /*tool_choice=*/"auto");
 
             // Print raw request JSON
             std::cout << "\n[Request]" << std::endl;

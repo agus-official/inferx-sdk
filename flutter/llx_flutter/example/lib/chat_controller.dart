@@ -44,12 +44,9 @@ class ChatController {
 
   // Chat options
   final ValueNotifier<bool> enableTools = ValueNotifier<bool>(false);
-  final ValueNotifier<String> toolFormat = ValueNotifier<String>(
-    'auto',
-  ); // auto|openai|functiongemma
   final ValueNotifier<int> maxToolCalls = ValueNotifier<int>(
-    1,
-  ); // FunctionGemma default
+    0,
+  ); // 0=unlimited；Gemma 类模型建议 1
 
   // 后端状态快照
   bool get isReady => _backend.isReady;
@@ -96,10 +93,9 @@ class ChatController {
       final lower = modelPath.toLowerCase();
       if (lower.contains('functiongemma') ||
           (lower.contains('gemma') && !lower.contains('qwen'))) {
-        toolFormat.value = 'functiongemma';
         maxToolCalls.value = 1;
         enableTools.value = true;
-        log('检测到 Gemma 模型，已启用 tool_format=functiongemma，max_tool_calls=1');
+        log('检测到 Gemma 模型，已启用工具调用（max_tool_calls=1；tool_format 由 SDK 自动识别）');
       }
 
       return true;
@@ -167,6 +163,13 @@ class ChatController {
     log('移除 LoRA: $path');
   }
 
+  String _modelNameFromPath(String? path) {
+    if (path == null || path.isEmpty) return 'local-llm';
+    final normalized = path.replaceAll('\\', '/');
+    final parts = normalized.split('/');
+    return parts.isNotEmpty && parts.last.isNotEmpty ? parts.last : 'local-llm';
+  }
+
   // 生成
   Future<void> sendUserMessage(String content) async {
     if (content.trim().isEmpty || !isModelLoaded.value || isGenerating.value) {
@@ -185,14 +188,10 @@ class ChatController {
     // 开始生成
     isGenerating.value = true;
     final opts = ChatRequestOptions(
-      modelName: toolFormat.value == 'functiongemma'
-          ? 'functiongemma'
-          : 'local-llm',
+      // 让 SDK 的“模型族策略”根据 model name 自动选择 tool 格式（建议用文件名/别名）
+      modelName: _modelNameFromPath(currentModelPath),
       enableTools: enableTools.value,
-      toolFormat: toolFormat.value,
-      maxToolCalls: (toolFormat.value == 'functiongemma')
-          ? maxToolCalls.value
-          : 0,
+      maxToolCalls: enableTools.value ? maxToolCalls.value : 0,
       maxTokens: 512,
       temperature: 0.7,
       topP: 0.9,

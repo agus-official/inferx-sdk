@@ -51,7 +51,6 @@ abstract class ChatBackend {
 class ChatRequestOptions {
   final String modelName; // request_json 里的 "model"
   final bool enableTools;
-  final String toolFormat; // auto|openai|functiongemma
   final int maxToolCalls; // 0=unlimited
   final int maxTokens;
   final double temperature;
@@ -62,7 +61,6 @@ class ChatRequestOptions {
   const ChatRequestOptions({
     this.modelName = 'local-llm',
     this.enableTools = false,
-    this.toolFormat = 'auto',
     this.maxToolCalls = 0,
     this.maxTokens = 512,
     this.temperature = 0.7,
@@ -138,7 +136,7 @@ class LocalChatBackend implements ChatBackend {
   }) async* {
     if (!isReady) throw StateError('Backend not ready');
 
-    // 如果启用工具，使用 OpenAI chatCompleteJson（支持 tools/tool_calls/stop/tool_format 等）
+    // 如果启用工具，使用 OpenAI chatCompleteJson（支持 tools/tool_calls；tool_format/stop 由 SDK 自动处理）
     if (options.enableTools) {
       yield* _generateViaChatCompletion(messages, options);
       return;
@@ -228,7 +226,6 @@ class LocalChatBackend implements ChatBackend {
             'top_k': options.topK,
             'max_tokens': options.maxTokens,
             'parse_tool_calls': options.parseToolCalls,
-            'tool_format': options.toolFormat,
             'max_tool_calls': options.maxToolCalls,
           };
 
@@ -238,17 +235,7 @@ class LocalChatBackend implements ChatBackend {
             req['parallel_tool_calls'] = false;
           }
 
-          // Ollama-compatible FunctionGemma stop sequences
-          if (options.toolFormat == 'functiongemma') {
-            if (options.maxToolCalls == 1) {
-              req['stop'] = [
-                '<end_function_call>',
-                '<start_function_response>',
-              ];
-            } else {
-              req['stop'] = ['<start_function_response>'];
-            }
-          }
+          // stop/tool_format 由 SDK 内部的“模型族策略”自动处理（无需在示例里显式传入）
 
           final respStr = await _llx.chatCompleteJson(
             _sessionHandle,

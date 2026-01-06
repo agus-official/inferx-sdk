@@ -14,13 +14,12 @@
 #include <cctype>
 #include <cstdlib>
 
+#include "tool_templates/llx_tool_templates.h"
+
 static thread_local std::string g_err;
 
 static void set_err(const std::string &e) { g_err = e; }
 extern "C" const char *llx_last_error(void) { return g_err.empty() ? "" : g_err.c_str(); }
-
-// 前置声明，供早期使用
-static bool is_valid_utf8(const std::string &s);
 
 static std::string trim_copy(const std::string &s) {
     size_t b = s.find_first_not_of(" \t\r\n");
@@ -28,213 +27,8 @@ static std::string trim_copy(const std::string &s) {
     size_t e = s.find_last_not_of(" \t\r\n");
     return s.substr(b, e - b + 1);
 }
-
-static std::string to_lower_copy(std::string s) {
-    for (auto &c : s) c = (char)std::tolower((unsigned char)c);
-    return s;
-}
-
-static bool contains_ci(const std::string &hay, const std::string &needle) {
-    if (needle.empty()) return true;
-    return to_lower_copy(hay).find(to_lower_copy(needle)) != std::string::npos;
-}
-
-static bool starts_with_at(const std::string &s, size_t pos, const std::string &prefix) {
-    return pos + prefix.size() <= s.size() && s.compare(pos, prefix.size(), prefix) == 0;
-}
-
-// 解析 FunctionGemma 工具调用参数：{a:<escape>str<escape>,b:123,c:true}
-static nlohmann::ordered_json parse_functiongemma_value(const std::string &s, size_t &i, int depth);
-
-static void skip_ws(const std::string &s, size_t &i) {
-    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
-}
-
-static std::string parse_key_token(const std::string &s, size_t &i) {
-    skip_ws(s, i);
-    if (i >= s.size()) return "";
-    // allow quoted key
-    if (s[i] == '"' || s[i] == '\'') {
-        char q = s[i++];
-        std::string out;
-        while (i < s.size() && s[i] != q) {
-            if (s[i] == '\\' && i + 1 < s.size()) {
-                out.push_back(s[i + 1]);
-                i += 2;
-            } else {
-                out.push_back(s[i++]);
-            }
-        }
-        if (i < s.size() && s[i] == q) i++;
-        return out;
-    }
-    // unquoted key: read until ':' or whitespace/comma/brace
-    size_t b = i;
-    while (i < s.size()) {
-        char c = s[i];
-        if (c == ':' || c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ',' || c == '}' || c == ']') break;
-        i++;
-    }
-    return trim_copy(s.substr(b, i - b));
-}
-
-static nlohmann::ordered_json parse_functiongemma_object(const std::string &s, size_t &i, int depth) {
-    using json = nlohmann::ordered_json;
-    json obj = json::object();
-    if (depth > 16) return obj;
-    // assume current char is '{'
-    if (i < s.size() && s[i] == '{') i++;
-    for (;;) {
-        skip_ws(s, i);
-        if (i >= s.size()) break;
-        if (s[i] == '}') { i++; break; }
-
-        std::string key = parse_key_token(s, i);
-        skip_ws(s, i);
-        if (i < s.size() && s[i] == ':') i++;
-        skip_ws(s, i);
-        json val = parse_functiongemma_value(s, i, depth + 1);
-        if (!key.empty()) obj[key] = val;
-
-        skip_ws(s, i);
-        if (i < s.size() && s[i] == ',') { i++; continue; }
-        if (i < s.size() && s[i] == '}') { i++; break; }
-        // tolerate missing comma by continuing
-    }
-    return obj;
-}
-
-static nlohmann::ordered_json parse_functiongemma_array(const std::string &s, size_t &i, int depth) {
-    using json = nlohmann::ordered_json;
-    json arr = json::array();
-    if (depth > 16) return arr;
-    if (i < s.size() && s[i] == '[') i++;
-    for (;;) {
-        skip_ws(s, i);
-        if (i >= s.size()) break;
-        if (s[i] == ']') { i++; break; }
-        arr.push_back(parse_functiongemma_value(s, i, depth + 1));
-        skip_ws(s, i);
-        if (i < s.size() && s[i] == ',') { i++; continue; }
-        if (i < s.size() && s[i] == ']') { i++; break; }
-    }
-    return arr;
-}
-
-static nlohmann::ordered_json parse_functiongemma_value(const std::string &s, size_t &i, int depth) {
-    using json = nlohmann::ordered_json;
-    skip_ws(s, i);
-    if (i >= s.size()) return json();
-
-    // <escape>STRING<escape>
-    const std::string esc = "<escape>";
-    if (starts_with_at(s, i, esc)) {
-        i += esc.size();
-        size_t j = s.find(esc, i);
-        std::string val = (j == std::string::npos) ? s.substr(i) : s.substr(i, j - i);
-        i = (j == std::string::npos) ? s.size() : (j + esc.size());
-        return val;
-    }
-
-    // nested object/array
-    if (s[i] == '{') return parse_functiongemma_object(s, i, depth);
-    if (s[i] == '[') return parse_functiongemma_array(s, i, depth);
-
-    // quoted string
-    if (s[i] == '"' || s[i] == '\'') {
-        char q = s[i++];
-        std::string out;
-        while (i < s.size() && s[i] != q) {
-            if (s[i] == '\\' && i + 1 < s.size()) {
-                out.push_back(s[i + 1]);
-                i += 2;
-            } else {
-                out.push_back(s[i++]);
-            }
-        }
-        if (i < s.size() && s[i] == q) i++;
-        return out;
-    }
-
-    // bare token until comma/brace/bracket
-    size_t b = i;
-    while (i < s.size()) {
-        char c = s[i];
-        if (c == ',' || c == '}' || c == ']' || c == '\r' || c == '\n') break;
-        i++;
-    }
-    std::string tok = trim_copy(s.substr(b, i - b));
-    if (tok == "true") return true;
-    if (tok == "false") return false;
-    if (tok == "null") return json();
-
-    // number?
-    if (!tok.empty()) {
-        char *endp = nullptr;
-        double d = std::strtod(tok.c_str(), &endp);
-        if (endp && endp != tok.c_str() && *endp == '\0') {
-            // keep int if possible
-            long long ll = (long long)d;
-            if ((double)ll == d) return ll;
-            return d;
-        }
-    }
-    return tok;
-}
-
-static std::vector<common_chat_tool_call> parse_functiongemma_tool_calls(const std::string &text) {
-    using json = nlohmann::ordered_json;
-    std::vector<common_chat_tool_call> out;
-    const std::string start = "<start_function_call>";
-    const std::string end = "<end_function_call>";
-    size_t pos = 0;
-    int idx = 0;
-    while (true) {
-        size_t s = text.find(start, pos);
-        if (s == std::string::npos) break;
-        size_t a = s + start.size();
-        size_t e = text.find(end, a);
-        bool partial = false;
-        if (e == std::string::npos) {
-            // tolerate partial generation (e.g. missing <end_function_call>)
-            e = text.size();
-            partial = true;
-        }
-        std::string inner = trim_copy(text.substr(a, e - a));
-
-        // expected: call:NAME{...} (but be tolerant: "callNAME{...}" or "call NAME{...}")
-        // We only accept a call that starts with "call" after trimming.
-        if (inner.rfind("call", 0) != 0) {
-            pos = partial ? e : (e + end.size());
-            if (partial) break;
-            continue;
-        }
-        size_t name_b = 4;
-        if (name_b < inner.size() && inner[name_b] == ':') name_b++;
-        while (name_b < inner.size() && std::isspace((unsigned char)inner[name_b])) name_b++;
-        size_t brace = inner.find('{', name_b);
-        if (brace == std::string::npos) {
-            pos = partial ? e : (e + end.size());
-            if (partial) break;
-            continue;
-        }
-        std::string name = trim_copy(inner.substr(name_b, brace - name_b));
-
-        // args object
-        size_t args_i = brace;
-        json args = parse_functiongemma_object(inner, args_i, /*depth=*/0);
-
-        common_chat_tool_call tc;
-        tc.name = name;
-        tc.arguments = args.dump();
-        tc.id = "call_" + std::to_string(idx++);
-        out.push_back(tc);
-
-        pos = partial ? e : (e + end.size());
-        if (partial) break;
-    }
-    return out;
-}
+// 前置声明，供早期使用
+static bool is_valid_utf8(const std::string &s);
 
 struct llx_model
 {
@@ -563,172 +357,119 @@ static void rebuild_sampler_from_request(llx_session *sess, const nlohmann::orde
     sess->sampler = sampler;
 }
 
-extern "C" int llx_chat_complete_json(llx_session *sess,
-                                       const char *request_json,
-                                       char *out_json, size_t out_size)
-{
+namespace {
     using json = nlohmann::ordered_json;
-    if (!sess || !sess->ctx || !sess->chat || !request_json || !out_json || out_size == 0)
-    {
-        set_err("llx_chat_complete_json: invalid args");
-        return 0;
-    }
 
-    json req;
-    try
-    {
-        req = json::parse(request_json);
-    }
-    catch (...)
-    {
-        set_err("llx_chat_complete_json: parse request failed");
-        return 0;
-    }
-
-    // 必需参数：messages（OpenAI chat 格式）
-    if (!req.contains("messages"))
-    {
-        set_err("llx_chat_complete_json: missing messages");
-        return 0;
-    }
-
-    // 工具与解析策略
+    struct llx_chat_complete_options {
     std::vector<common_chat_tool> tools;
     common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
     bool parallel_tool_calls = false;
-    bool parse_tool_calls = true; // 启用输出解析
-    std::string tool_format = "auto"; // auto|openai|functiongemma
+        bool parse_tool_calls = true;
+        std::string requested_tool_format = "auto"; // auto|openai|functiongemma
     std::vector<std::string> user_stop;
     int max_tool_calls = 0; // 0 = unlimited
-    try
-    {
-        if (req.contains("tools") && !req["tools"].is_null())
-        {
+        int n_predict = 1024;
+        std::string model_name;
+    };
+
+    static bool llx_parse_request_json(const char *request_json, json &out_req) {
+        try {
+            out_req = json::parse(request_json);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    static bool llx_parse_chat_complete_options(const json &req, llx_chat_complete_options &opt) {
+        try {
+            if (req.contains("tools") && !req["tools"].is_null()) {
             // 兼容输入把 parameters 写成字符串的情况：尝试转为 JSON 对象
-            nlohmann::ordered_json tools_json = req["tools"].get<nlohmann::ordered_json>();
-            if (tools_json.is_array())
-            {
-                for (auto &tool : tools_json)
-                {
-                    try
-                    {
-                        if (tool.contains("type") && tool["type"] == "function" && tool.contains("function"))
-                        {
+                json tools_json = req["tools"].get<json>();
+                if (tools_json.is_array()) {
+                    for (auto &tool : tools_json) {
+                        try {
+                            if (tool.contains("type") && tool["type"] == "function" && tool.contains("function")) {
                             auto &fn = tool["function"];
-                            if (fn.contains("parameters") && fn["parameters"].is_string())
-                            {
-                                auto parsed = nlohmann::ordered_json::parse(fn["parameters"].get<std::string>());
+                                if (fn.contains("parameters") && fn["parameters"].is_string()) {
+                                    auto parsed = json::parse(fn["parameters"].get<std::string>());
                                 fn["parameters"] = parsed;
                             }
                         }
-                    }
-                    catch (...)
-                    {
+                        } catch (...) {
                         // 忽略单个 tool 的参数转换错误，留给下游抛错
                     }
                 }
             }
-            tools = common_chat_tools_parse_oaicompat(tools_json);
-        }
-        if (req.contains("tool_choice") && !req["tool_choice"].is_null())
-            tool_choice = common_chat_tool_choice_parse_oaicompat(req["tool_choice"].get<std::string>());
-        if (req.contains("parallel_tool_calls"))
-            parallel_tool_calls = req["parallel_tool_calls"].get<bool>();
-        if (req.contains("parse_tool_calls"))
-            parse_tool_calls = req["parse_tool_calls"].get<bool>();
-        if (req.contains("tool_format") && req["tool_format"].is_string())
-            tool_format = req["tool_format"].get<std::string>();
-        if (req.contains("max_tool_calls") && !req["max_tool_calls"].is_null())
-            max_tool_calls = req["max_tool_calls"].get<int>();
+                opt.tools = common_chat_tools_parse_oaicompat(tools_json);
+            }
+            if (req.contains("tool_choice") && !req["tool_choice"].is_null()) {
+                opt.tool_choice = common_chat_tool_choice_parse_oaicompat(req["tool_choice"].get<std::string>());
+            }
+            if (req.contains("parallel_tool_calls")) opt.parallel_tool_calls = req["parallel_tool_calls"].get<bool>();
+            if (req.contains("parse_tool_calls")) opt.parse_tool_calls = req["parse_tool_calls"].get<bool>();
+            if (req.contains("tool_format") && req["tool_format"].is_string()) {
+                opt.requested_tool_format = req["tool_format"].get<std::string>();
+            }
+            if (req.contains("max_tool_calls") && !req["max_tool_calls"].is_null()) {
+                opt.max_tool_calls = req["max_tool_calls"].get<int>();
+            }
         // stop: string or array of strings (OpenAI-ish)
-        if (req.contains("stop") && !req["stop"].is_null())
-        {
-            if (req["stop"].is_string())
-                user_stop.push_back(req["stop"].get<std::string>());
-            else if (req["stop"].is_array())
-                for (auto &x : req["stop"]) if (x.is_string()) user_stop.push_back(x.get<std::string>());
+            if (req.contains("stop") && !req["stop"].is_null()) {
+                if (req["stop"].is_string()) {
+                    opt.user_stop.push_back(req["stop"].get<std::string>());
+                } else if (req["stop"].is_array()) {
+                    for (auto &x : req["stop"]) if (x.is_string()) opt.user_stop.push_back(x.get<std::string>());
+                }
+            }
+
+            opt.n_predict = req.value("max_tokens", 1024);
+            opt.model_name = req.value("model", "");
+            return true;
+        } catch (...) {
+            return false;
         }
     }
-    catch (const std::exception &e)
-    {
-        set_err(std::string("llx_chat_complete_json: tools/tool_choice parse failed: ") + e.what());
-        return 0;
-    }
 
-    rebuild_sampler_from_request(sess, req);
-
-    // 构造模板输入，应用并 prefill
-    sess->cached.clear();
-    sess->ncur = 0;
-
-    std::vector<llama_token> toks;
-    common_chat_params params;
-    try
-    {
+    static bool llx_apply_template_and_prefill(llx_session *sess,
+                                               const json &req,
+                                               const llx_chat_complete_options &opt,
+                                               std::vector<llama_token> &out_prompt_tokens,
+                                               common_chat_params &out_params) {
+        try {
         common_chat_templates_inputs inputs;
         inputs.add_generation_prompt = true;
         inputs.use_jinja = true;
         inputs.messages = common_chat_msgs_parse_oaicompat(req["messages"]);
-        inputs.tools = tools;
-        inputs.tool_choice = tool_choice;
-        inputs.parallel_tool_calls = parallel_tool_calls;
-        params = common_chat_templates_apply(sess->chat, inputs);
-        // 启用解析 tool_calls（影响后续 common_chat_parse 的语法）
-        params.format = params.format; // keep
-        common_chat_syntax syntax;
-        syntax.format = params.format;
-        syntax.parse_tool_calls = parse_tool_calls;
-        (void)syntax; // 仅用于 later parse
-
-        toks = common_tokenize(sess->ctx, params.prompt, /*add_special*/ true, /*parse_special*/ true);
-    }
-    catch (const std::exception &e)
-    {
+            inputs.tools = opt.tools;
+            inputs.tool_choice = opt.tool_choice;
+            inputs.parallel_tool_calls = opt.parallel_tool_calls;
+            out_params = common_chat_templates_apply(sess->chat, inputs);
+            out_prompt_tokens = common_tokenize(sess->ctx, out_params.prompt, /*add_special*/ true, /*parse_special*/ true);
+        } catch (const std::exception &e) {
         set_err(std::string("llx_chat_complete_json: messages/template apply failed: ") + e.what());
-        return 0;
+            return false;
+        } catch (...) {
+            set_err("llx_chat_complete_json: messages/template apply failed");
+            return false;
     }
 
     common_batch_clear(sess->batch);
-    for (int i = 0; i < (int)toks.size(); ++i)
-    {
-        common_batch_add(sess->batch, toks[i], i, {0}, false);
+        for (int i = 0; i < (int) out_prompt_tokens.size(); ++i) {
+            common_batch_add(sess->batch, out_prompt_tokens[i], i, {0}, false);
     }
     sess->batch.logits[sess->batch.n_tokens - 1] = true;
-    if (llama_decode(sess->ctx, sess->batch) != 0)
-    {
+        if (llama_decode(sess->ctx, sess->batch) != 0) {
         set_err("llx_chat_complete_json: prefill decode failed");
-        return 0;
+            return false;
     }
     sess->ncur = sess->batch.n_tokens;
-
-    // 生成循环
-    int n_predict = req.value("max_tokens", 1024);
-    int stop_token_emitted = 0;
-    std::string generated;
-
-    // stop sequences：优先使用 chat template 给出的 additional_stops，并叠加用户 stop
-    std::vector<std::string> stop_seqs = params.additional_stops;
-    for (const auto &s : user_stop) stop_seqs.push_back(s);
-
-    // tool_format auto: 根据 model 名称做一个保守启发式（只影响 stop/parse，不影响 prompt 模板）
-    if (tool_format == "auto") {
-        std::string model_name = req.value("model", "");
-        if (!tools.empty() && (contains_ci(model_name, "functiongemma") || contains_ci(model_name, "gemma"))) {
-            tool_format = "functiongemma";
-        } else {
-            tool_format = "openai";
-        }
-    }
-    if (tool_format == "functiongemma") {
-        // 官方建议把 start_function_response 当作 stop
-        stop_seqs.push_back("<start_function_response>");
-        // 若上层希望单次工具调用（max_tool_calls=1），则在第一个 call 结束就停，避免继续生成其它 call
-        if (max_tool_calls == 1) {
-            stop_seqs.push_back("<end_function_call>");
-        }
+        return true;
     }
 
-    auto find_earliest_stop = [&](const std::string &s, size_t &out_pos) -> bool {
+    static bool llx_find_earliest_stop(const std::string &s,
+                                       const std::vector<std::string> &stop_seqs,
+                                       size_t &out_pos) {
         bool found = false;
         size_t best = std::string::npos;
         for (const auto &st : stop_seqs) {
@@ -741,17 +482,23 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
         }
         if (found) out_pos = best;
         return found;
-    };
+    }
 
-    for (;;)
-    {
+    static std::string llx_generate_with_stops(llx_session *sess,
+                                               int n_predict,
+                                               const std::vector<llama_token> &prompt_tokens,
+                                               const std::vector<std::string> &stop_seqs,
+                                               int &out_stop_token_emitted) {
+        out_stop_token_emitted = 0;
+        std::string generated;
+
+        for (;;) {
         const auto *model = llama_get_model(sess->ctx);
         const auto *vocab = llama_model_get_vocab(model);
         llama_token new_id = llama_sampler_sample(sess->sampler, sess->ctx, -1);
 
-        if (llama_vocab_is_eog(vocab, new_id) || sess->ncur - (int)toks.size() >= n_predict)
-        {
-            stop_token_emitted = llama_vocab_is_eog(vocab, new_id) ? 1 : 0;
+            if (llama_vocab_is_eog(vocab, new_id) || sess->ncur - (int) prompt_tokens.size() >= n_predict) {
+                out_stop_token_emitted = llama_vocab_is_eog(vocab, new_id) ? 1 : 0;
             break;
         }
 
@@ -760,11 +507,10 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
         {
             std::string candidate = generated + sess->cached + piece;
             size_t stop_pos = 0;
-            if (!stop_seqs.empty() && find_earliest_stop(candidate, stop_pos))
-            {
+                if (!stop_seqs.empty() && llx_find_earliest_stop(candidate, stop_seqs, stop_pos)) {
                 generated = candidate.substr(0, stop_pos);
                 sess->cached.clear();
-                stop_token_emitted = 1;
+                    out_stop_token_emitted = 1;
                 break;
             }
         }
@@ -778,24 +524,29 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
         common_batch_clear(sess->batch);
         common_batch_add(sess->batch, new_id, sess->ncur, {0}, true);
         sess->ncur += 1;
-        if (llama_decode(sess->ctx, sess->batch) != 0)
-        {
+            if (llama_decode(sess->ctx, sess->batch) != 0) {
             break;
         }
     }
 
-    // 解析生成文本，以便抽出 tool_calls（若启用）
-    std::vector<common_chat_msg> out_msgs;
+        return generated;
+    }
+
+    static common_chat_msg llx_parse_generated_message(const std::string &generated,
+                                                       const llx_tooling_policy &policy,
+                                                       const common_chat_params &params,
+                                                       bool parse_tool_calls) {
     common_chat_msg parsed;
+        parsed.role = "assistant";
+
     common_chat_syntax syntax;
     syntax.format = params.format;
     syntax.parse_tool_calls = parse_tool_calls;
-    parsed.role = "assistant";
+
     bool used_functiongemma = false;
-    if (parse_tool_calls && (tool_format == "functiongemma" || generated.find("<start_function_call>") != std::string::npos))
-    {
-        // FunctionGemma：从 <start_function_call>...<end_function_call> 抽出调用
-        parsed.tool_calls = parse_functiongemma_tool_calls(generated);
+        if (parse_tool_calls && (policy.format == llx_tool_format_kind::functiongemma ||
+                                 generated.find("<start_function_call>") != std::string::npos)) {
+            parsed.tool_calls = llx_parse_functiongemma_tool_calls(generated);
         used_functiongemma = true;
         if (parsed.tool_calls.empty()) {
             parsed.content = generated;
@@ -803,8 +554,8 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
             parsed.content.clear();
         }
     }
-    if (!used_functiongemma)
-    {
+
+        if (!used_functiongemma) {
         try {
             parsed = common_chat_parse(generated, /*is_partial=*/false, syntax);
         } catch (...) {
@@ -814,21 +565,21 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
         }
     }
 
-    // 可选：限制最多返回 N 个 tool_calls（用于把“并行工具调用”的模型压成单次调用）
-    if (max_tool_calls > 0 && parsed.tool_calls.size() > (size_t)max_tool_calls)
-    {
-        parsed.tool_calls.resize((size_t)max_tool_calls);
+        return parsed;
     }
 
-    // 构造 OpenAI 兼容响应
+    static json llx_build_openai_compatible_response(const json &req,
+                                                     const std::vector<llama_token> &prompt_tokens,
+                                                     int ncur,
+                                                     const common_chat_msg &parsed,
+                                                     const std::string &generated,
+                                                     int stop_token_emitted,
+                                                     int n_predict) {
     json message;
     message["role"] = "assistant";
-    if (!parsed.tool_calls.empty())
-    {
-        // 返回 tool_calls（函数名 + 参数字符串）
+        if (!parsed.tool_calls.empty()) {
         json tcs = json::array();
-        for (size_t i = 0; i < parsed.tool_calls.size(); ++i)
-        {
+            for (size_t i = 0; i < parsed.tool_calls.size(); ++i) {
             const auto &tc = parsed.tool_calls[i];
             json item;
             item["id"] = tc.id.empty() ? ("call_" + std::to_string(i)) : tc.id;
@@ -841,19 +592,18 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
         }
         message["tool_calls"] = tcs;
         message["content"] = nullptr;
-    }
-    else
-    {
+        } else {
         message["content"] = parsed.content.empty() ? generated : parsed.content;
     }
 
     std::string finish_reason = "stop";
-    if (sess->ncur - (int)toks.size() >= n_predict)
+        if (ncur - (int) prompt_tokens.size() >= n_predict) {
         finish_reason = "length";
-    else if (!parsed.tool_calls.empty())
+        } else if (!parsed.tool_calls.empty()) {
         finish_reason = "tool_calls";
-    else if (stop_token_emitted)
+        } else if (stop_token_emitted) {
         finish_reason = "stop";
+        }
 
     json choice;
     choice["index"] = 0;
@@ -864,15 +614,82 @@ extern "C" int llx_chat_complete_json(llx_session *sess,
     resp["object"] = "chat.completion";
     resp["model"] = req.value("model", "local-llm");
     resp["choices"] = json::array({choice});
-    // usage 粗略估计：输入/输出 token 数
-    int prompt_tokens = (int)toks.size();
-    int completion_tokens = std::max(0, sess->ncur - prompt_tokens);
-    resp["usage"] = {
-        {"prompt_tokens", prompt_tokens},
-        {"completion_tokens", completion_tokens},
-        {"total_tokens", prompt_tokens + completion_tokens}
-    };
 
+        int prompt_tokens_n = (int) prompt_tokens.size();
+        int completion_tokens = std::max(0, ncur - prompt_tokens_n);
+    resp["usage"] = {
+                {"prompt_tokens", prompt_tokens_n},
+        {"completion_tokens", completion_tokens},
+                {"total_tokens", prompt_tokens_n + completion_tokens}
+        };
+
+        return resp;
+    }
+} // namespace
+
+extern "C" int llx_chat_complete_json(llx_session *sess,
+                                       const char *request_json,
+                                       char *out_json, size_t out_size)
+{
+    if (!sess || !sess->ctx || !sess->chat || !request_json || !out_json || out_size == 0)
+    {
+        set_err("llx_chat_complete_json: invalid args");
+        return 0;
+    }
+
+    json req;
+    if (!llx_parse_request_json(request_json, req)) {
+        set_err("llx_chat_complete_json: parse request failed");
+        return 0;
+    }
+
+    // 必需参数：messages（OpenAI chat 格式）
+    if (!req.contains("messages"))
+    {
+        set_err("llx_chat_complete_json: missing messages");
+        return 0;
+    }
+
+    llx_chat_complete_options opt;
+    if (!llx_parse_chat_complete_options(req, opt)) {
+        set_err("llx_chat_complete_json: tools/options parse failed");
+        return 0;
+    }
+
+    rebuild_sampler_from_request(sess, req);
+
+    // 构造模板输入，应用并 prefill
+    sess->cached.clear();
+    sess->ncur = 0;
+
+    std::vector<llama_token> toks;
+    common_chat_params params;
+    if (!llx_apply_template_and_prefill(sess, req, opt, toks, params)) {
+        return 0;
+    }
+
+    // 解析/stop 策略：由“模型族模板”统一管理
+    llx_tooling_policy policy = llx_resolve_tooling_policy(opt.model_name,
+                                                           opt.requested_tool_format,
+                                                           !opt.tools.empty(),
+                                                           opt.max_tool_calls);
+
+    std::vector<std::string> stop_seqs = params.additional_stops;
+    for (const auto &s : opt.user_stop) stop_seqs.push_back(s);
+    for (const auto &s : policy.additional_stop_sequences) stop_seqs.push_back(s);
+
+    int stop_token_emitted = 0;
+    std::string generated = llx_generate_with_stops(sess, opt.n_predict, toks, stop_seqs, stop_token_emitted);
+
+    common_chat_msg parsed = llx_parse_generated_message(generated, policy, params, opt.parse_tool_calls);
+
+    // 可选：限制最多返回 N 个 tool_calls（用于把“并行工具调用”的模型压成单次调用）
+    if (opt.max_tool_calls > 0 && parsed.tool_calls.size() > (size_t) opt.max_tool_calls)
+    {
+        parsed.tool_calls.resize((size_t) opt.max_tool_calls);
+    }
+
+    json resp = llx_build_openai_compatible_response(req, toks, sess->ncur, parsed, generated, stop_token_emitted, opt.n_predict);
     std::string s = resp.dump();
     size_t n = std::min(out_size - 1, s.size());
     memcpy(out_json, s.data(), n);

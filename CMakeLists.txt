@@ -47,7 +47,12 @@ set(MINJA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/minja/include")
 set(LLAMA_COMMON_DIR "${LLAMA_CPP_DIR}/common")
 
 # -------- SDK 动态库 --------
-add_library(llx SHARED src/llx.cpp)
+add_library(llx SHARED
+  src/llx.cpp
+  src/tool_templates/llx_tool_templates.cpp
+  src/tool_templates/families/functiongemma.cpp
+  src/tool_templates/families/qwen.cpp
+)
 target_include_directories(llx
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${LLAMA_CPP_DIR}            # for llama.h

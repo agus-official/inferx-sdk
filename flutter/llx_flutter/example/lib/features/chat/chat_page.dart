@@ -395,38 +395,13 @@ class ModelSheet extends StatelessWidget {
                 );
               },
             ),
-            ValueListenableBuilder<String>(
-              valueListenable: c.toolFormat,
-              builder: (BuildContext context, String fmt, Widget? _) {
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('tool_format'),
-                  subtitle: const Text('auto / openai / functiongemma'),
-                  trailing: DropdownButton<String>(
-                    value: fmt,
-                    items: const [
-                      DropdownMenuItem(value: 'auto', child: Text('auto')),
-                      DropdownMenuItem(value: 'openai', child: Text('openai')),
-                      DropdownMenuItem(
-                        value: 'functiongemma',
-                        child: Text('functiongemma'),
-                      ),
-                    ],
-                    onChanged: (v) {
-                      if (v == null) return;
-                      c.toolFormat.value = v;
-                      if (v == 'functiongemma' && c.maxToolCalls.value <= 0) {
-                        c.maxToolCalls.value = 1;
-                      }
-                    },
-                  ),
-                );
-              },
-            ),
             ValueListenableBuilder<int>(
               valueListenable: c.maxToolCalls,
               builder: (BuildContext context, int n, Widget? _) {
-                final bool isGemma = c.toolFormat.value == 'functiongemma';
+                final lower = (c.currentModelPath ?? '').toLowerCase();
+                final bool isGemma =
+                    lower.contains('functiongemma') ||
+                    (lower.contains('gemma') && !lower.contains('qwen'));
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('max_tool_calls'),
